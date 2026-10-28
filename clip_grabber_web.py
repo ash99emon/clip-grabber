@@ -280,7 +280,8 @@ STEP_NAMES = {
 
 def public_job(job):
     out = {k: job[k] for k in ("id", "title", "start", "end", "mode", "quality", "status",
-                                "percent", "message", "created")}
+                                "percent", "message", "created", "precise")}
+    out["elapsed"] = int(time.time() - job["created"])
     fp = job.get("filepath")
     out["filename"] = os.path.basename(fp) if fp else None
     out["size"] = os.path.getsize(fp) if fp and os.path.exists(fp) else None
@@ -305,12 +306,13 @@ def run_job(job, url, opts_in):
         def progress(d):
             if d["status"] == "downloading":
                 job["status"] = "downloading"
-                total = d.get("total_bytes") or d.get("total_bytes_estimate")
+                total = d.get("total_bytes")
                 done = d.get("downloaded_bytes")
                 if total and done:
                     job["percent"] = max(1.0, min(97.0, done * 100.0 / total))
                 speed = d.get("_speed_str", "").strip()
-                job["message"] = "Downloading" + (f" ({speed})" if speed and "Unknown" not in speed else "")
+                base = "Downloading and cutting precisely" if job.get("precise") else "Downloading"
+                job["message"] = base + (f" ({speed})" if speed and "Unknown" not in speed else "")
             elif d["status"] == "finished":
                 job["status"] = "processing"
                 job["message"] = "Finishing up"
@@ -345,10 +347,16 @@ def run_job(job, url, opts_in):
             cap = f"[height<={h}]" if isinstance(h, int) else ""
             opts["format"] = (f"bv*{cap}[ext=mp4]+ba[ext=m4a]/b{cap}[ext=mp4]/"
                               f"bv*{cap}+ba/b{cap}/bv*+ba/b")
+            # H.264 is far quicker to cut and plays everywhere (phones, WhatsApp, old PCs).
+            opts["format_sort"] = ["vcodec:h264", "res", "fps", "acodec:m4a"]
             opts["merge_output_format"] = "mp4"
+            if opts_in.get("precise"):
+                # Exact cuts re-encode the clip; the fastest encoder setting halves the wait.
+                opts["external_downloader_args"] = {"ffmpeg_o": ["-preset", "ultrafast", "-crf", "22"]}
 
         job["status"] = "downloading"
-        job["message"] = "Starting download"
+        job["message"] = ("Downloading and cutting precisely (this takes longer)"
+                          if job.get("precise") else "Starting download")
         with yt_dlp.YoutubeDL(opts) as ydl:
             code = ydl.download([url])
 
@@ -387,7 +395,7 @@ def create_job(data):
         "id": uuid.uuid4().hex[:10], "url": url,
         "title": str(data.get("title") or "Clip")[:200],
         "start": start, "end": end, "mode": mode, "quality": quality,
-        "status": "queued", "percent": None, "message": "Queued",
+        "status": "queued", "percent": None, "message": "Queued", "precise": bool(data.get("precise")),
         "created": time.time(), "log": [], "filepath": None,
     }
     with JOBS_LOCK:
@@ -847,7 +855,7 @@ footer button{font-size:12.5px}
         <button type="button" id="mAudio" aria-pressed="false">Audio MP3</button>
       </div>
       <select id="quality" aria-label="Quality"></select>
-      <label class="toggle"><input type="checkbox" id="precise" checked> Exact cut <span style="opacity:.7">(slower)</span></label>
+      <label class="toggle" title="Off: very fast, but the clip may start a second or two early. On: starts at the exact second, but takes much longer."><input type="checkbox" id="precise"> Exact cut <span style="opacity:.7">(much slower)</span></label>
     </div>
     <button class="btn big" id="dlBtn">Download clip</button>
     <div class="err hidden" id="dlErr"></div>
@@ -1086,7 +1094,7 @@ async function refreshJobs(){
     return `<div class="job">
       <div class="jt"><b title="${esc(j.title)}">${esc(j.title)}</b><code>${fmt(j.start)} – ${fmt(j.end)} · ${j.mode === "audio" ? "MP3" : "MP4" + (j.quality !== "best" ? " " + j.quality + "p" : "")}</code></div>
       <div class="bar ${barCls}"><i style="width:${w}%"></i></div>
-      <div class="jm ${j.status === "error" ? "bad" : ""}"><span class="msg">${esc(j.status === "done" ? (j.filename + " · " + size(j.size)) : j.message)}${active && j.percent != null ? " · " + Math.round(j.percent) + "%" : ""}</span>${acts}</div>
+      <div class="jm ${j.status === "error" ? "bad" : ""}"><span class="msg">${esc(j.status === "done" ? (j.filename + " · " + size(j.size)) : j.message)}${active && j.percent != null ? " · " + Math.round(j.percent) + "%" : ""}${active ? " · " + fmt(j.elapsed) : ""}</span>${acts}</div>
       ${j.log.length ? `<details><summary>Details</summary><pre>${esc(j.log.join("\n"))}</pre></details>` : ""}
     </div>`;
   }).join("");
@@ -1149,6 +1157,8 @@ $("quit").onclick = async () => {
   document.body.innerHTML = '<div class="wrap"><div class="card" style="margin-top:40px;text-align:center"><h2 style="margin:0 0 6px">Clip Grabber has stopped</h2><div class="hint">You can close this tab. Start the app again whenever you need it.</div></div></div>';
 };
 refreshJobs();
+try{ $("precise").checked = localStorage.getItem("cg-precise") === "1"; }catch(_){}
+$("precise").addEventListener("change", () => { try{ localStorage.setItem("cg-precise", $("precise").checked ? "1" : "0"); }catch(_){} });
 </script>
 </body>
 </html>
