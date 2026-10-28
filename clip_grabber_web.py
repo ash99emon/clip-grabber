@@ -437,7 +437,7 @@ class Handler(BaseHTTPRequestHandler):
         host = (self.headers.get("Host") or "").split(":")[0].strip("[]").lower()
         return host in ("127.0.0.1", "localhost", "::1")
 
-    def _send(self, code, body, ctype="application/json; charset=utf-8", extra=None):
+    def _send(self, code, body, ctype="application/json; charset=utf-8", extra=None, head=False):
         if isinstance(body, (dict, list)):
             body = json.dumps(body).encode()
         elif isinstance(body, str):
@@ -449,7 +449,8 @@ class Handler(BaseHTTPRequestHandler):
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.end_headers()
-        self.wfile.write(body)
+        if not head:
+            self.wfile.write(body)
 
     def _json_body(self):
         if "application/json" not in (self.headers.get("Content-Type") or ""):
@@ -472,23 +473,45 @@ class Handler(BaseHTTPRequestHandler):
             with JOBS_LOCK:
                 jobs = sorted(JOBS.values(), key=lambda j: j["created"], reverse=True)
                 return self._send(200, [public_job(j) for j in jobs])
-        m = re.fullmatch(r"/api/file/([0-9a-f]{10})", path)
+        m = re.fullmatch(r"/api/file/([0-9a-f]{10})(?:/[^/]*)?", path)
         if m:
-            job = JOBS.get(m.group(1))
-            fp = job and job.get("filepath")
-            if not fp or not os.path.exists(fp):
-                return self._send(404, {"error": "File not found"})
-            name = os.path.basename(fp)
-            self.send_response(200)
-            self.send_header("Content-Type", "application/octet-stream")
-            self.send_header("Content-Length", str(os.path.getsize(fp)))
-            self.send_header("Content-Disposition",
-                             f"attachment; filename*=UTF-8''{quote(name)}")
-            self.end_headers()
+            return self._serve_file(m.group(1))
+        self._send(404, {"error": "not found"})
+
+    # Download managers and browser extensions often ask with HEAD first.
+    def do_HEAD(self):
+        if not self._host_ok():
+            return self._send(403, {"error": "forbidden"}, head=True)
+        m = re.fullmatch(r"/api/file/([0-9a-f]{10})(?:/[^/]*)?", urlparse(self.path).path)
+        if m:
+            return self._serve_file(m.group(1), head=True)
+        self._send(404, {"error": "not found"}, head=True)
+
+    def _serve_file(self, job_id, head=False):
+        job = JOBS.get(job_id)
+        fp = job and job.get("filepath")
+        if not fp or not os.path.exists(fp):
+            page = ("<!doctype html><meta charset=utf-8><title>Clip not found</title>"
+                    "<body style='font:16px system-ui;padding:40px;max-width:560px'>"
+                    "<h2>This clip isn't available here any more</h2>"
+                    "<p>It may have been moved or deleted, or Clip Grabber was restarted. "
+                    "Your clips are saved in <b>Downloads &rsaquo; Clip Grabber</b>.</p>")
+            return self._send(404, page, "text/html; charset=utf-8", head=head)
+        name = os.path.basename(fp)
+        stem, ext = os.path.splitext(name)
+        ascii_name = re.sub(r'[^A-Za-z0-9 ._()\[\]-]+', "_", stem).strip(" _") or "clip"
+        ascii_name = (ascii_name + ext).replace('"', "")
+        self.send_response(200)
+        self.send_header("Content-Type", "audio/mpeg" if ext.lower() == ".mp3" else
+                         "video/mp4" if ext.lower() == ".mp4" else "application/octet-stream")
+        self.send_header("Content-Length", str(os.path.getsize(fp)))
+        self.send_header("Content-Disposition",
+                         f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(name)}")
+        self.send_header("Accept-Ranges", "none")
+        self.end_headers()
+        if not head:
             with open(fp, "rb") as f:
                 shutil.copyfileobj(f, self.wfile)
-            return
-        self._send(404, {"error": "not found"})
 
     def do_POST(self):
         if not self._host_ok():
@@ -1058,7 +1081,7 @@ async function refreshJobs(){
     const barCls = j.status === "done" ? "ok" : j.status === "error" ? "bad" : (j.percent == null ? "indet" : "");
     const w = j.status === "done" ? 100 : (j.percent || 0);
     const acts = j.status === "done"
-      ? `<button class="link" data-reveal="${j.id}">Show in folder</button><a class="link" href="/api/file/${j.id}" download>Save a copy</a>`
+      ? `<button class="link" data-reveal="${j.id}">Show in folder</button><a class="link" href="/api/file/${j.id}/${encodeURIComponent(j.filename || "clip")}" download>Save a copy</a>`
       : (j.status === "error" && /YouTube sign-in/.test(j.message) ? `<button class="link" data-signin="1">Fix this</button>` : "");
     return `<div class="job">
       <div class="jt"><b title="${esc(j.title)}">${esc(j.title)}</b><code>${fmt(j.start)} – ${fmt(j.end)} · ${j.mode === "audio" ? "MP3" : "MP4" + (j.quality !== "best" ? " " + j.quality + "p" : "")}</code></div>
