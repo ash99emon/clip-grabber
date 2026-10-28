@@ -57,6 +57,10 @@ months later, run "Build EXE (Windows).bat" again for a fresh copy.
 ------------------------------------------------------------------
 IF SOMETHING GOES WRONG
 ------------------------------------------------------------------
+- "Sign in to confirm you're not a bot": click "YouTube sign-in" at the
+  top of the app. Pick a browser where you're signed in to YouTube
+  (Firefox works best), or export a cookies.txt file with the free
+  "Get cookies.txt LOCALLY" browser extension and choose it there.
 - Downloads suddenly fail: click "Update download engine" at the
   bottom of the app, then restart it. Sites change often.
 - Under each clip, "Details" shows exactly what happened.

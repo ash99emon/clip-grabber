@@ -17,6 +17,7 @@ Clip Grabber is a small app that runs on your own computer and opens in your bro
 - **Video or audio.** Save as MP4 at the quality you choose, or as MP3.
 - **Exact cuts.** Clips start at the exact second you chose. Turn this off for faster downloads.
 - **Private by design.** Everything runs on your computer. Nothing goes through anyone else's server.
+- **Handles YouTube's bot check.** Connect your browser's YouTube login in one click when YouTube asks.
 - **Sets itself up.** The first start installs everything it needs and keeps the download engine up to date.
 
 ## 🚀 Getting started
@@ -55,6 +56,7 @@ Clip Grabber is a single Python file with no web framework:
 
 ## ❓ Troubleshooting
 
+- **"Sign in to confirm you're not a bot":** YouTube does this on some internet connections, especially mobile data or shared Wi-Fi. Click **YouTube sign-in** at the top of the app and either pick a browser where you're signed in to YouTube (Firefox works best), or export a `cookies.txt` file with the free **Get cookies.txt LOCALLY** extension and choose it there. Your login stays on your computer.
 - **Downloads suddenly fail:** click **Update download engine** at the bottom of the app, then restart it. Video sites change often.
 - **Want to know what went wrong:** open **Details** under the clip. It shows the full log.
 - **Started it twice:** that's fine. A second start just opens the app that's already running.

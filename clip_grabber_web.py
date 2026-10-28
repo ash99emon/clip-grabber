@@ -37,6 +37,10 @@ DEFAULT_PORT = 8765
 FROZEN = getattr(sys, "frozen", False)
 OUT_DIR = os.path.join(os.path.expanduser("~"), "Downloads", "Clip Grabber")
 EXE = ".exe" if os.name == "nt" else ""
+SETTINGS_PATH = os.path.join(os.path.expanduser("~"), ".clip_grabber.json")
+COOKIE_PATH = os.path.join(os.path.expanduser("~"), ".clip_grabber_cookies.txt")
+BROWSERS = ("firefox", "chrome", "edge", "brave", "opera", "vivaldi", "chromium", "safari")
+ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
 # ----------------------------------------------------------------- helpers
@@ -132,12 +136,65 @@ def prepare_engine():
             raise
 
 
+# ---- "YouTube sign-in" settings (borrowing the browser's login cookies)
+
+def load_settings():
+    s = {"mode": "none", "browser": "firefox"}
+    try:
+        with open(SETTINGS_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("mode") in ("none", "browser", "file"):
+            s["mode"] = data["mode"]
+        if data.get("browser") in BROWSERS:
+            s["browser"] = data["browser"]
+    except Exception:
+        pass
+    return s
+
+
+def save_settings(s):
+    with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+        json.dump(s, f)
+
+
+def public_settings():
+    s = load_settings()
+    s["has_file"] = os.path.isfile(COOKIE_PATH)
+    return s
+
+
+def save_cookie_file(text):
+    text = str(text or "")
+    if len(text) > 5_000_000:
+        raise ValueError("That file is too big to be a cookies.txt file.")
+    lines = [l for l in text.splitlines() if l.strip() and not l.startswith("#")]
+    looks_ok = text.lstrip().startswith(("# Netscape HTTP Cookie File", "# HTTP Cookie File")) or \
+        any(len(l.split("\t")) >= 7 for l in lines)
+    if not looks_ok:
+        raise ValueError("That doesn't look like a cookies.txt file. Export it again with the "
+                         "browser extension and pick the downloaded .txt file.")
+    if "youtube.com" not in text:
+        raise ValueError("This cookies file has no YouTube cookies. Open youtube.com while "
+                         "signed in, then export again.")
+    with open(COOKIE_PATH, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text if text.endswith("\n") else text + "\n")
+    try:
+        os.chmod(COOKIE_PATH, 0o600)
+    except OSError:
+        pass
+
+
 def base_opts(logger):
     opts = {"noplaylist": True, "logger": logger, "quiet": True, "no_warnings": False}
     if _paths.get("ffmpeg"):
         opts["ffmpeg_location"] = _paths["ffmpeg"]
     if _paths.get("deno"):
         opts["js_runtimes"] = {"deno": {"path": _paths["deno"]}}
+    s = load_settings()
+    if s["mode"] == "file" and os.path.isfile(COOKIE_PATH):
+        opts["cookiefile"] = COOKIE_PATH
+    elif s["mode"] == "browser":
+        opts["cookiesfrombrowser"] = (s["browser"],)
     return opts
 
 
@@ -146,7 +203,7 @@ class ListLogger:
         self.lines = sink if sink is not None else []
 
     def _add(self, msg):
-        self.lines.append(msg)
+        self.lines.append(ANSI.sub("", str(msg)))
         del self.lines[:-200]
 
     def debug(self, msg):
@@ -163,8 +220,20 @@ class ListLogger:
         self._add(msg)
 
 
+BOT_HINT = ("YouTube wants to check you're not a bot. Click \"YouTube sign-in\" at the top, "
+            "connect your browser's YouTube login, then try again.")
+
+
 def clean_error(text):
-    text = re.sub(r"^(ERROR:\s*)?(\[[^\]]+\]\s*)?([\w-]{6,}:\s*)?", "", str(text).strip())
+    text = ANSI.sub("", str(text)).strip()
+    low = text.lower()
+    if "not a bot" in low or "sign in to confirm" in low:
+        return BOT_HINT
+    if "dpapi" in low or "cookie database" in low or "could not find" in low and "cookies" in low \
+            or "failed to decrypt" in low or "app-bound" in low:
+        return ("Couldn't read the login from that browser. Close it completely and try again, "
+                "or use the cookies.txt option in \"YouTube sign-in\". It works with any browser.")
+    text = re.sub(r"^(ERROR:\s*)?(\[[^\]]+\]\s*)?([\w-]{6,}:\s*)?", "", text)
     return text or "Something went wrong."
 
 
@@ -285,7 +354,7 @@ def run_job(job, url, opts_in):
 
         fp = job.get("filepath")
         if code or not fp or not os.path.exists(fp):
-            errors = [l for l in job["log"] if l.startswith("ERROR")]
+            errors = [l for l in job["log"] if "ERROR" in l[:12]]
             raise RuntimeError(errors[-1] if errors else "The download did not finish.")
         if os.path.getsize(fp) < 2048:
             os.remove(fp)
@@ -397,6 +466,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/ping":
             return self._send(200, {"app": APP_ID, "engine": ENGINE, "folder": OUT_DIR,
                                     "packaged": FROZEN})
+        if path == "/api/settings":
+            return self._send(200, public_settings())
         if path == "/api/jobs":
             with JOBS_LOCK:
                 jobs = sorted(JOBS.values(), key=lambda j: j["created"], reverse=True)
@@ -441,6 +512,30 @@ class Handler(BaseHTTPRequestHandler):
                 job = JOBS.get(str(data.get("id", "")))
                 reveal(job.get("filepath") if job else None)
                 return self._send(200, {"ok": True})
+            if path == "/api/settings":
+                s = load_settings()
+                if data.get("mode") in ("none", "browser", "file"):
+                    s["mode"] = data["mode"]
+                if data.get("browser") in BROWSERS:
+                    s["browser"] = data["browser"]
+                if s["mode"] == "file" and not os.path.isfile(COOKIE_PATH):
+                    raise ValueError("Choose your cookies.txt file first.")
+                save_settings(s)
+                return self._send(200, public_settings())
+            if path == "/api/cookies":
+                save_cookie_file(data.get("text"))
+                s = load_settings()
+                s["mode"] = "file"
+                save_settings(s)
+                return self._send(200, public_settings())
+            if path == "/api/cookies/remove":
+                if os.path.isfile(COOKIE_PATH):
+                    os.remove(COOKIE_PATH)
+                s = load_settings()
+                if s["mode"] == "file":
+                    s["mode"] = "none"
+                save_settings(s)
+                return self._send(200, public_settings())
             if path == "/api/clear":
                 with JOBS_LOCK:
                     for k in [k for k, j in JOBS.items() if j["status"] in ("done", "error")]:
@@ -611,6 +706,15 @@ select{background:var(--panel2);border:1px solid var(--line);border-radius:10px;
 details{margin-top:6px} summary{cursor:pointer;color:var(--muted);font-size:12px}
 pre{font:11.5px/1.5 var(--mono);color:var(--muted);background:var(--panel2);border-radius:8px;padding:10px;max-height:180px;overflow:auto;white-space:pre-wrap;word-break:break-word}
 footer{color:var(--muted);font-size:12.5px;text-align:center;margin-top:24px}
+.signin{border-color:var(--accent)}
+.signin p{margin:0 0 4px}
+.ckpane{margin-top:12px}
+.steps{margin:8px 0 10px;padding-left:20px;line-height:1.7}
+.steps b{color:var(--text);font-weight:600}
+.filepick{display:inline-flex;align-items:center;gap:8px;background:var(--panel2);border:1px dashed var(--muted);border-radius:10px;padding:10px 14px;cursor:pointer}
+.filepick input{display:none}
+.okmsg{color:var(--ok)}
+.ckrow{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:16px}
 footer button{font-size:12.5px}
 .empty{color:var(--muted);font-size:14px;padding:6px 0}
 </style>
@@ -624,6 +728,7 @@ footer button{font-size:12.5px}
     <h1>Clip Grabber</h1>
     <span id="engine" class="pill wait"><i></i><span>Starting...</span></span>
     <div class="spacer"></div>
+    <button class="ghost" id="openSignin" title="Fix 'confirm you're not a bot' errors">YouTube sign-in</button>
     <button class="ghost" id="openFolder" title="Open the folder where clips are saved">Open folder</button>
     <button class="ghost" id="quit" title="Stop Clip Grabber">Quit</button>
   </header>
@@ -635,6 +740,40 @@ footer button{font-size:12.5px}
     </form>
     <div class="hint">Paste a link, pick the part you want, and download only that part.</div>
     <div class="err hidden" id="loadErr"></div>
+  </section>
+
+  <section class="card signin hidden" id="signin">
+    <div class="jobhead"><h3>YouTube sign-in</h3><div class="spacer"></div><button class="link" id="closeSignin">Close</button></div>
+    <p class="hint" style="margin-top:0">Sometimes YouTube says <b>"Sign in to confirm you're not a bot"</b>, often on mobile data or shared internet. Clip Grabber can borrow the YouTube login from your browser (its cookies) so YouTube trusts it. Your login stays on this computer and is only sent to YouTube.</p>
+    <div class="label">How to connect</div>
+    <div class="seg" role="group" aria-label="Sign-in method">
+      <button type="button" data-ck="none">Off</button>
+      <button type="button" data-ck="browser">From a browser</button>
+      <button type="button" data-ck="file">cookies.txt file</button>
+    </div>
+    <div class="ckpane hidden" id="ckBrowser">
+      <select id="ckBrowserSel" aria-label="Browser">
+        <option value="firefox">Firefox</option><option value="chrome">Chrome</option><option value="edge">Edge</option>
+        <option value="brave">Brave</option><option value="opera">Opera</option><option value="vivaldi">Vivaldi</option>
+        <option value="chromium">Chromium</option><option value="safari">Safari (Mac)</option>
+      </select>
+      <div class="hint">Make sure you're signed in to YouTube in that browser. <b>Firefox works best.</b> On Windows, Chrome and Edge lock their logins, so if that fails, use the cookies.txt option instead.</div>
+    </div>
+    <div class="ckpane hidden" id="ckFile">
+      <ol class="hint steps">
+        <li>In the browser where you're signed in to YouTube, install the free extension <b>Get cookies.txt LOCALLY</b>.</li>
+        <li>Open <b>youtube.com</b>, click the extension's icon, and click <b>Export</b>.</li>
+        <li>Choose the downloaded file here:</li>
+      </ol>
+      <label class="filepick"><input type="file" id="ckFileInput" accept=".txt,text/plain">&#128196; <span>Choose cookies.txt</span></label>
+      <button class="link" id="ckRemove" style="margin-left:10px">Remove saved file</button>
+      <div class="hint" id="ckFileStatus"></div>
+    </div>
+    <div class="ckrow">
+      <button class="btn" id="ckSave">Save and try again</button>
+      <span class="hint" id="ckMsg" style="margin:0"></span>
+    </div>
+    <div class="hint">Tip: if you can, sign in with a spare Google account. YouTube occasionally flags accounts used this way.</div>
   </section>
 
   <section class="card hidden" id="editor">
@@ -757,6 +896,7 @@ $("urlForm").addEventListener("submit", async ev => {
     showEditor();
   }catch(e){
     $("loadErr").textContent = e.message; $("loadErr").classList.remove("hidden");
+    if (/not a bot|YouTube sign-in/.test(e.message)) openSignin();
   }finally{ btn.disabled = false; btn.textContent = "Load"; }
 });
 
@@ -919,7 +1059,7 @@ async function refreshJobs(){
     const w = j.status === "done" ? 100 : (j.percent || 0);
     const acts = j.status === "done"
       ? `<button class="link" data-reveal="${j.id}">Show in folder</button><a class="link" href="/api/file/${j.id}" download>Save a copy</a>`
-      : "";
+      : (j.status === "error" && /YouTube sign-in/.test(j.message) ? `<button class="link" data-signin="1">Fix this</button>` : "");
     return `<div class="job">
       <div class="jt"><b title="${esc(j.title)}">${esc(j.title)}</b><code>${fmt(j.start)} – ${fmt(j.end)} · ${j.mode === "audio" ? "MP3" : "MP4" + (j.quality !== "best" ? " " + j.quality + "p" : "")}</code></div>
       <div class="bar ${barCls}"><i style="width:${w}%"></i></div>
@@ -934,7 +1074,45 @@ async function refreshJobs(){
 $("jobs").addEventListener("click", e => {
   const id = e.target.dataset && e.target.dataset.reveal;
   if (id) api("/api/reveal", {id}).catch(err => alert(err.message));
+  if (e.target.dataset && e.target.dataset.signin) openSignin();
 });
+
+/* ---------- YouTube sign-in (cookies) ---------- */
+const CK = {mode:"none", browser:"firefox", has_file:false};
+function renderCk(){
+  document.querySelectorAll("[data-ck]").forEach(b => b.setAttribute("aria-pressed", b.dataset.ck === CK.mode));
+  $("ckBrowser").classList.toggle("hidden", CK.mode !== "browser");
+  $("ckFile").classList.toggle("hidden", CK.mode !== "file");
+  $("ckBrowserSel").value = CK.browser;
+  $("ckFileStatus").innerHTML = CK.has_file ? '<span class="okmsg">&#10003; A cookies file is saved.</span> Choose a new one any time to replace it.' : "No file saved yet.";
+  $("ckRemove").classList.toggle("hidden", !CK.has_file);
+  const on = CK.mode === "browser" ? "On (" + $("ckBrowserSel").selectedOptions[0].textContent + ")" : CK.mode === "file" && CK.has_file ? "On (cookies file)" : "";
+  $("openSignin").textContent = on ? "YouTube sign-in \u2713" : "YouTube sign-in";
+}
+async function loadCk(){ try{ Object.assign(CK, await api("/api/settings")); renderCk(); }catch(_){} }
+function openSignin(){ $("signin").classList.remove("hidden"); $("ckMsg").textContent = ""; $("signin").scrollIntoView({behavior:"smooth", block:"start"}); }
+$("openSignin").onclick = () => $("signin").classList.contains("hidden") ? openSignin() : $("signin").classList.add("hidden");
+$("closeSignin").onclick = () => $("signin").classList.add("hidden");
+document.querySelectorAll("[data-ck]").forEach(b => b.onclick = () => { CK.mode = b.dataset.ck; renderCk(); });
+$("ckBrowserSel").onchange = () => { CK.browser = $("ckBrowserSel").value; };
+$("ckFileInput").onchange = async e => {
+  const f = e.target.files[0]; e.target.value = "";
+  if (!f) return;
+  $("ckFileStatus").textContent = "Saving...";
+  try{ Object.assign(CK, await api("/api/cookies", {text: await f.text()})); renderCk(); $("ckMsg").textContent = "Cookies saved. Click \"Save and try again\"."; }
+  catch(err){ $("ckFileStatus").innerHTML = '<span style="color:var(--err)">' + esc(err.message) + "</span>"; }
+};
+$("ckRemove").onclick = async () => { try{ Object.assign(CK, await api("/api/cookies/remove", {})); renderCk(); }catch(err){ alert(err.message); } };
+$("ckSave").onclick = async () => {
+  $("ckMsg").textContent = "";
+  try{
+    Object.assign(CK, await api("/api/settings", {mode: CK.mode, browser: $("ckBrowserSel").value}));
+    renderCk();
+    $("ckMsg").innerHTML = '<span class="okmsg">Saved.</span>';
+    if ($("url").value.trim()){ $("signin").classList.add("hidden"); $("urlForm").requestSubmit(); }
+  }catch(err){ $("ckMsg").innerHTML = '<span style="color:var(--err)">' + esc(err.message) + "</span>"; }
+};
+loadCk();
 $("clear").onclick = () => api("/api/clear", {}).then(refreshJobs);
 $("openFolder").onclick = () => api("/api/reveal", {}).catch(err => alert(err.message));
 $("update").onclick = async () => {
