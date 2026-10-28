@@ -1,0 +1,66 @@
+CLIP GRABBER
+Download just the part of a video you want, not the whole thing.
+
+It looks and works like a website, but it runs on your own computer,
+so your downloads never go through anyone else's server.
+
+------------------------------------------------------------------
+ONE-TIME SETUP
+------------------------------------------------------------------
+1. Install Python from https://www.python.org/downloads/
+   On Windows, tick "Add Python to PATH" on the first setup screen.
+
+------------------------------------------------------------------
+START IT
+------------------------------------------------------------------
+Windows:  double-click  "Start Clip Grabber (Windows).bat"
+Mac:      double-click  "Start Clip Grabber (Mac).command"
+          (if macOS blocks it: right-click > Open > Open)
+
+Your browser opens the app automatically. The first start takes a
+minute or two while it downloads its tools. Each start also checks
+for engine updates, which keeps YouTube downloads working.
+
+Keep the small black window open while you use it. Close it, or
+click "Quit" in the app, to stop.
+
+------------------------------------------------------------------
+USE IT
+------------------------------------------------------------------
+1. Paste a video link and click Load.
+2. Pick the part you want:
+   - drag the orange handles on the timeline, or
+   - type times like 1:30 or 1:02:03, or
+   - play the preview and click "Use now" at the right moment, or
+   - click a chapter name, if the video has chapters.
+3. "Play the clip" previews exactly what you selected.
+4. Choose Video MP4 or Audio MP3, and a quality.
+5. Click "Download clip".
+
+Clips are saved to:  Downloads > Clip Grabber
+Names look like:     Video title [1m30s-2m45s].mp4
+
+"Exact cut" starts the clip exactly at your time. It is a little
+slower. Turn it off for speed; the clip may then start a second or
+two early.
+
+------------------------------------------------------------------
+MAKE IT A REAL APP (Windows .exe, optional)
+------------------------------------------------------------------
+Double-click "Build EXE (Windows).bat" once. After a few minutes you
+get "dist\Clip Grabber.exe". Put it on your Desktop and double-click
+it like any other program. No Python window needed after that.
+
+The .exe does not update itself. If downloads start failing a few
+months later, run "Build EXE (Windows).bat" again for a fresh copy.
+
+------------------------------------------------------------------
+IF SOMETHING GOES WRONG
+------------------------------------------------------------------
+- Downloads suddenly fail: click "Update download engine" at the
+  bottom of the app, then restart it. Sites change often.
+- Under each clip, "Details" shows exactly what happened.
+- Port already in use / app already open: starting it again just
+  opens the existing window.
+
+Only download videos you have the right to use.
